@@ -2,17 +2,55 @@ name: LB-DJStream CI
 
 on:
   push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
+    branches: [ "initial-test" ]
+
+env:
+  IMAGE_NAME: us-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/containers/${{ vars.GCP_SERVICE_NAME }}:${{ github.sha }}
 
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ github.ref_name }}
+        ssh-key: '${{ secrets.LB_SVC_ACCT }}'
+
+    - uses: 'google-github-actions/auth@v1'
+      with:
+        credentials_json: '${{ secrets.GCP_SVC_CREDENTIALS }}'
+
+    - name: Set Docker Permissions
+      run: gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin https://us-west1-docker.pkg.dev 
+
+    - name: build
+      run: docker build . --no-cache -t ${{ env.IMAGE_NAME }}
+    - name: push image
+      run: docker push ${{ env.IMAGE_NAME }}
+    - name: Deploy in Cloud Run
+      uses: 'google-github-actions/auth@v1'
+      with:
+        credentials_json: '${{ secrets.GCP_SVC_CREDENTIALS }}'
+
+    - uses: 'google-github-actions/deploy-cloudrun@v1'
+      with:
+        service: ${{ vars.GCP_SERVICE_NAME }}
+        region: us-west1
+        env_vars: |
+          LB_ENV=${{ vars.LB_ENV }}
+        secrets: |
+          LB_INGEST_PWD=ingest-db-pwd:latest
+        image: ${{ env.IMAGE_NAME }}
+        flags: |
+          --vpc-connector=projects/lone-buffalo-network/locations/us-west1/connectors/cloud-run-west 
+          --vpc-egress=all-traffic
+          --ingress=internal-and-cloud-load-balancing
+          --cpu=2
+          --memory=8Gi
+          --cpu-boost
+          --execution-environment=gen2
+          --session-affinity
+          --service-account=${{ vars.GCP_SERVICE_RUNNER }}@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+          --min-instances=${{ env.MIN_INSTANCES }}
+
